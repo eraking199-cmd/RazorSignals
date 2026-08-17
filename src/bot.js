@@ -9,8 +9,6 @@
 //
 // IMPORTANT: This bot is for research / paper-trading only.
 // It never connects to MT5 or places real trades.
-//
-// Subscriber chat IDs are stored permanently in Supabase.
 
 const TelegramBot = require('node-telegram-bot-api');
 const config = require('./config');
@@ -26,10 +24,9 @@ const {
 let bot = null;
 
 // -----------------------------------------------------------------------------
-// Subscriber management
+// Supabase subscriber management
 // -----------------------------------------------------------------------------
 
-// Adds a Telegram user as an active subscriber.
 async function addSubscriber(chatId) {
   const db = getDb();
 
@@ -41,9 +38,7 @@ async function addSubscriber(chatId) {
         active: true,
         updated_at: new Date().toISOString(),
       },
-      {
-        onConflict: 'chat_id',
-      }
+      { onConflict: 'chat_id' }
     );
 
   if (error) {
@@ -51,7 +46,6 @@ async function addSubscriber(chatId) {
   }
 }
 
-// Marks a Telegram user as inactive.
 async function removeSubscriber(chatId) {
   const db = getDb();
 
@@ -68,7 +62,6 @@ async function removeSubscriber(chatId) {
   }
 }
 
-// Checks whether a Telegram user is currently subscribed.
 async function isSubscriber(chatId) {
   const db = getDb();
 
@@ -86,16 +79,12 @@ async function isSubscriber(chatId) {
   return !!data;
 }
 
-// Returns the number of active subscribers.
 async function getSubscriberCount() {
   const db = getDb();
 
   const { count, error } = await db
     .from('subscribers')
-    .select('chat_id', {
-      count: 'exact',
-      head: true,
-    })
+    .select('chat_id', { count: 'exact', head: true })
     .eq('active', true);
 
   if (error) {
@@ -105,8 +94,7 @@ async function getSubscriberCount() {
   return count || 0;
 }
 
-// Gets every active subscriber.
-async function getSubscribers() {
+async function getActiveSubscribers() {
   const db = getDb();
 
   const { data, error } = await db
@@ -122,13 +110,33 @@ async function getSubscribers() {
 }
 
 // -----------------------------------------------------------------------------
-// Bot startup
+// Telegram initialization
+// -----------------------------------------------------------------------------
+
+// Initializes Telegram without starting polling.
+// Used by GitHub Actions for scheduled scans.
+function initTelegramSender() {
+  if (!config.telegramBotToken) {
+    throw new Error(
+      'TELEGRAM_BOT_TOKEN is not set.'
+    );
+  }
+
+  if (!bot) {
+    bot = new TelegramBot(config.telegramBotToken, {
+      polling: false,
+    });
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Normal Telegram bot startup
 // -----------------------------------------------------------------------------
 
 function startBot() {
   if (!config.telegramBotToken) {
     throw new Error(
-      'TELEGRAM_BOT_TOKEN is not set. Add it to your environment variables.'
+      'TELEGRAM_BOT_TOKEN is not set. Add it to your .env file (see README).'
     );
   }
 
@@ -136,131 +144,104 @@ function startBot() {
     polling: true,
   });
 
-  // Wire scanner callbacks to Telegram notifications.
   scanner.setCallbacks({
     onSetup: (setup) => broadcast(formatSetupMessage(setup)),
     onWeekend: () => broadcast(formatWeekendMessage()),
     onMarketActive: () => broadcast(formatMarketActiveMessage()),
   });
 
-  // ---------------------------------------------------------------------------
-  // /start — subscribe this Telegram user
-  // ---------------------------------------------------------------------------
-
+  // /start
   bot.onText(/^\/start$/, async (msg) => {
-    const chatId = msg.chat.id;
-
     try {
-      await addSubscriber(chatId);
+      await addSubscriber(msg.chat.id);
 
-      // Start the scanner if it isn't already running.
-      const started = scanner.start();
-
-      await reply(
+      reply(
         msg,
-        started
-          ? '✅ You are subscribed to RazorSignals alerts.\n\n' +
-              '🟢 Research scanner enabled. Hourly scans are now running.\n\n' +
-              'This is a paper-trading / research tool — no real trades are placed.'
-          : '✅ You are subscribed to RazorSignals alerts.\n\n' +
-              'ℹ️ Research scanner is already running.'
+        '✅ You are subscribed to RazorSignals alerts.\n\n' +
+          'You will receive qualifying research signals here.\n\n' +
+          'This is a paper-trading / research tool — no real trades are placed.'
       );
     } catch (err) {
-      console.error('Start command error:', err.message);
+      console.error('Subscribe error:', err.message);
 
-      await reply(
+      reply(
         msg,
-        '❌ Could not subscribe you right now.\n\n' +
-          'Please try again later.'
+        '❌ I could not subscribe you right now.\n\n' +
+          'Please try /start again in a moment.'
       );
     }
   });
 
-  // ---------------------------------------------------------------------------
-  // /stop — unsubscribe this Telegram user
-  // ---------------------------------------------------------------------------
-
+  // /stop
   bot.onText(/^\/stop$/, async (msg) => {
-    const chatId = msg.chat.id;
-
     try {
-      const wasSubscribed = await isSubscriber(chatId);
+      const subscribed = await isSubscriber(msg.chat.id);
 
-      if (!wasSubscribed) {
-        await reply(
+      if (!subscribed) {
+        reply(
           msg,
-          'ℹ️ You are not currently subscribed to RazorSignals alerts.'
+          'ℹ️ You are not currently subscribed to scanner alerts.'
         );
         return;
       }
 
-      await removeSubscriber(chatId);
+      await removeSubscriber(msg.chat.id);
 
-      await reply(
+      reply(
         msg,
         '⏹ You have been unsubscribed from RazorSignals alerts.\n\n' +
-          'You can use /start at any time to subscribe again.'
+          'Use /start again whenever you want to resubscribe.'
       );
     } catch (err) {
-      console.error('Stop command error:', err.message);
+      console.error('Unsubscribe error:', err.message);
 
-      await reply(
+      reply(
         msg,
-        '❌ Could not unsubscribe you right now.\n\n' +
-          'Please try again later.'
+        '❌ I could not unsubscribe you right now.'
       );
     }
   });
 
-  // ---------------------------------------------------------------------------
-  // /status — show scanner and subscription status
-  // ---------------------------------------------------------------------------
-
+  // /status
   bot.onText(/^\/status$/, async (msg) => {
     try {
-      const running = scanner.isRunning();
       const subscribed = await isSubscriber(msg.chat.id);
-      const subscriberCount = await getSubscriberCount();
+      const count = await getSubscriberCount();
 
-      await reply(
+      reply(
         msg,
         [
-          running
-            ? '🟢 Research scanner: RUNNING'
-            : '🔴 Research scanner: STOPPED',
+          subscribed
+            ? '🔔 You are subscribed to RazorSignals alerts.'
+            : '🔕 You are not subscribed to RazorSignals alerts.',
+          '',
+          `👥 Active subscribers: ${count}`,
+          '',
+          '⏰ Scans are handled by the scheduled RazorSignals scanner.',
           '',
           subscribed
-            ? '🔔 You are subscribed to alerts.'
-            : '🔕 You are not subscribed to alerts.',
-          '',
-          `👥 Active subscribers: ${subscriberCount}`,
-          '',
-          running
-            ? 'Hourly market scans are active.'
-            : 'Use /start to enable the scanner.',
+            ? 'You will receive qualifying signals here.'
+            : 'Use /start to subscribe.',
         ].join('\n')
       );
     } catch (err) {
-      console.error('Status command error:', err.message);
+      console.error('Status error:', err.message);
 
-      await reply(
+      reply(
         msg,
-        '❌ Could not retrieve status right now.'
+        '❌ I could not retrieve your status right now.'
       );
     }
   });
 
-  // ---------------------------------------------------------------------------
-  // /testscan — run one scan immediately
-  // ---------------------------------------------------------------------------
-
+  // /testscan
   bot.onText(/^\/testscan$/, async (msg) => {
-    await reply(msg, '🧪 Running a test scan now...');
+    reply(msg, '🧪 Running a test scan now...');
 
     try {
       await scanner.runScan();
 
-      await reply(
+      reply(
         msg,
         '✅ Test scan finished.\n\n' +
           'If a qualifying setup was found, it will be sent as a signal.\n' +
@@ -270,19 +251,16 @@ function startBot() {
     } catch (err) {
       console.error('Test scan error:', err.message);
 
-      await reply(
+      reply(
         msg,
         `❌ Test scan failed:\n${err.message}`
       );
     }
   });
 
-  // ---------------------------------------------------------------------------
-  // /help — show available commands
-  // ---------------------------------------------------------------------------
-
-  bot.onText(/^\/help$/, async (msg) => {
-    await reply(
+  // /help
+  bot.onText(/^\/help$/, (msg) => {
+    reply(
       msg,
       [
         '🤖 RazorSignals — Research Scanner',
@@ -290,14 +268,12 @@ function startBot() {
         'Available commands:',
         '/start — Subscribe to scanner alerts',
         '/stop — Unsubscribe from scanner alerts',
-        '/status — Show scanner status',
+        '/status — Show subscription status',
         '/testscan — Run one scan immediately',
         '/help — Show this help message',
         '',
         '⚠️ This is a paper-trading / research tool only.',
         'No real trades are placed.',
-        'Historical win rates are backtest statistics,',
-        'not a guarantee of future profit.',
       ].join('\n')
     );
   });
@@ -309,63 +285,64 @@ function startBot() {
 }
 
 // -----------------------------------------------------------------------------
-// Reply helper
+// Reply to a Telegram user
 // -----------------------------------------------------------------------------
 
-async function reply(msg, text) {
-  try {
-    await bot.sendMessage(msg.chat.id, text);
-  } catch (err) {
-    console.error(
-      'Telegram reply error:',
-      err.message
+function reply(msg, text) {
+  if (!bot) return;
+
+  bot
+    .sendMessage(msg.chat.id, text)
+    .catch((err) =>
+      console.error('Telegram reply error:', err.message)
     );
-  }
 }
 
 // -----------------------------------------------------------------------------
-// Broadcast helper
+// Broadcast to every active subscriber
 // -----------------------------------------------------------------------------
 
-// Sends a scanner message to every active subscriber stored in Supabase.
 async function broadcast(text) {
   if (!bot) {
     console.error(
-      'Telegram bot is not initialized — cannot broadcast message.'
+      'Telegram sender is not initialized — cannot broadcast.'
     );
     return;
   }
 
+  let chatIds;
+
   try {
-    const subscribers = await getSubscribers();
-
-    if (subscribers.length === 0) {
-      console.error(
-        'No active Telegram subscribers — cannot broadcast message.'
-      );
-      return;
-    }
-
-    for (const chatId of subscribers) {
-      try {
-        await bot.sendMessage(chatId, text);
-      } catch (err) {
-        console.error(
-          `Telegram broadcast error for ${chatId}:`,
-          err.message
-        );
-      }
-    }
+    chatIds = await getActiveSubscribers();
   } catch (err) {
     console.error(
-      'Failed to load Telegram subscribers:',
+      'Could not load Telegram subscribers:',
       err.message
     );
+    return;
+  }
+
+  if (chatIds.length === 0) {
+    console.log(
+      'No active Telegram subscribers — nothing to broadcast.'
+    );
+    return;
+  }
+
+  for (const chatId of chatIds) {
+    try {
+      await bot.sendMessage(chatId, text);
+    } catch (err) {
+      console.error(
+        `Telegram broadcast error for ${chatId}:`,
+        err.message
+      );
+    }
   }
 }
 
 module.exports = {
   startBot,
+  initTelegramSender,
   broadcast,
-  getSubscribers,
 };
