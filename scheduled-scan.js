@@ -4,33 +4,36 @@
 require('dotenv').config();
 
 const scanner = require('./src/scanner');
-const { broadcast } = require('./src/bot');
+const { initTelegramSender, broadcast } = require('./src/bot');
+
+const {
+  formatSetupMessage,
+  formatWeekendMessage,
+  formatMarketActiveMessage,
+} = require('./src/utils/format');
 
 async function main() {
   console.log('🚀 Starting scheduled RazorSignals scan...');
 
+  // Initialize Telegram without starting polling.
+  initTelegramSender();
+
+  // Connect scanner events to Telegram broadcasts.
   scanner.setCallbacks({
     onSetup: async (setup) => {
-      const {
-        formatSetupMessage,
-        formatWeekendMessage,
-        formatMarketActiveMessage,
-      } = require('./src/utils/format');
-
       await broadcast(formatSetupMessage(setup));
     },
 
     onWeekend: async () => {
-      const { formatWeekendMessage } = require('./src/utils/format');
       await broadcast(formatWeekendMessage());
     },
 
     onMarketActive: async () => {
-      const { formatMarketActiveMessage } = require('./src/utils/format');
       await broadcast(formatMarketActiveMessage());
     },
   });
 
+  // Run exactly ONE scan.
   await scanner.runScan();
 
   console.log('✅ Scheduled RazorSignals scan finished.');
